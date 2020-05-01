@@ -1,0 +1,215 @@
+---
+title: "Assignment2"
+author: "Dayeon Kim"
+date: "3/22/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+fire <- read_csv("building_fires.csv")
+```
+```{r}
+firehouses <- read_csv("FDNY_Firehouse_Listing.csv") %>%
+  dplyr::filter(!is.na(Latitude))
+```
+
+# 1. Location of Severe Fires
+```{r}
+severe_fire <- subset(fire, HIGHEST_LEVEL_DESC == "7 - Signal 7-5")
+```
+
+```{r}
+library(leaflet)
+m <- leaflet(severe_fire) %>%
+   addTiles('http://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png') %>%
+     setView(-73.9949344, 40.7179112, zoom = 14)
+
+content <- paste("Duration:",severe_fire$TOTAL_INCIDENT_DURATION, "sec","<br/>",
+                 "Borough:",severe_fire$BOROUGH_DESC,"<br/>",
+                 "Street Name:",severe_fire$STREET_HIGHWAY,"<br/>")
+
+m %>% addCircles(col="orange", popup = content)
+```
+
+# 2. Layers and Clusters
+
+## a) Color by Type of Property
+
+```{r}
+severe_fire <- severe_fire %>% mutate(PROPERTY_TYPE = case_when(
+  str_detect(PROPERTY_USE_DESC, "^1") ~ "Assembly", 
+  str_detect(PROPERTY_USE_DESC, "^2") ~ "Educational",
+  str_detect(PROPERTY_USE_DESC, "^3") ~ "Health Care",
+  str_detect(PROPERTY_USE_DESC, "^4") ~ "Residential",
+  str_detect(PROPERTY_USE_DESC, "^5") ~ "Business",
+  str_detect(PROPERTY_USE_DESC, "^6") ~ "Plant, Manufacturing",
+  str_detect(PROPERTY_USE_DESC, "^7") ~ "Plant, Manufacturing",
+  str_detect(PROPERTY_USE_DESC, "^8") ~ "Storage",
+  str_detect(PROPERTY_USE_DESC, "^9") ~ "Outside Property",
+  TRUE ~ "Other"))
+```
+
+```{r}
+library(RColorBrewer)
+pal = colorFactor("Set1", domain = severe_fire$PROPERTY_TYPE)
+color_offsel1 = pal(severe_fire$PROPERTY_TYPE)
+
+#Popup content 
+content2 <- paste("Duration:",severe_fire$TOTAL_INCIDENT_DURATION, "sec","<br/>",
+                 "Borough:",severe_fire$BOROUGH_DESC,"<br/>",
+                 "Street Name:",severe_fire$STREET_HIGHWAY,"<br/>", 
+                 "Property Type:",severe_fire$PROPERTY_TYPE)
+
+
+m %>% addCircles(color = color_offsel1, popup = content2) %>%
+   addLegend(pal = pal, values = ~severe_fire$PROPERTY_TYPE, title = "Property Type")
+```
+
+## b) Cluster
+```{r}
+mclust <- m %>% addCircleMarkers(color = color_offsel1, 
+                       popup = content2,
+                       clusterOptions = markerClusterOptions()) %>%
+  addLegend(pal = pal, values = ~severe_fire$PROPERTY_TYPE, title = "Property Type")
+
+mclust
+```
+
+# 3. Firehouses 
+
+```{r}
+m2 <- leaflet(severe_fire) %>%
+   addTiles('http://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', group = "BaseMap") %>%
+     setView(-73.9949344, 40.7179112, zoom = 14) %>% 
+  addCircles(color = color_offsel1, popup = content2, radius = severe_fire$TOTAL_INCIDENT_DURATION/1000, group = "Incidents") %>%
+   addLegend(pal = pal, values = ~severe_fire$PROPERTY_TYPE, title = "Property Type") %>%
+  addCircles(group = "Firehouses", 
+             data = firehouses) %>%
+  addLayersControl(
+baseGroups = c("BaseMap"),
+overlayGroups = c("Incidents","Firehouses"),
+options = layersControlOptions(collapsed = TRUE))
+
+m2
+```
+
+# 4. Distance from Firehouse and Response Time
+
+## a) Calculate Distance 
+```{r}
+library(geosphere)
+fire_dist <- cbind(severe_fire$lat, severe_fire$lon)
+firehouse_dist <- cbind(firehouses$Latitude, firehouses$Longitude)
+a <- distm(fire_dist, firehouse_dist, fun = distGeo)
+which_firehouse <- apply(a, 1, which.min) #identifying which firehouse is the closest to each incident
+min_dist <- apply(a, 1, min) #calculating the distance between incident and the closest firehouse 
+combined <- cbind(which_firehouse, min_dist)
+```
+
+```{r}
+library(ggplot2)
+severe_fire2 <- severe_fire %>% mutate(arrival_time = as.POSIXct(ARRIVAL_DATE_TIME, format = "%m/%d/%Y %I:%M:%S %p"), 
+                                       incident_time = as.POSIXct(INCIDENT_DATE_TIME, format = "%m/%d/%Y %I:%M:%S %p"), 
+                                       response_time = difftime(arrival_time, incident_time, 
+                                                              units = "secs"))
+
+df <- cbind(combined, severe_fire2)
+gg <- ggplot(df, aes(x = min_dist, y = response_time)) + scale_x_continuous(limits = c(0,1000)) + scale_y_continuous(limits = c(0,600)) + geom_point()
+gg
+```
+
+# non-severe fire incidents
+```{r}
+non_severe <- subset(fire, HIGHEST_LEVEL_DESC == "1 - More than initial alarm, less than Signal 7-5")
+non_severe <- non_severe %>% mutate(arrival_time = as.POSIXct(ARRIVAL_DATE_TIME, format = "%m/%d/%Y %I:%M:%S %p"), 
+                                       incident_time = as.POSIXct(INCIDENT_DATE_TIME, format = "%m/%d/%Y %I:%M:%S %p"), 
+                                       response_time = difftime(arrival_time, incident_time, 
+                                                              units = "secs"))
+fire_dist2 <- cbind(non_severe$lat, non_severe$lon)
+firehouse_dist <- cbind(firehouses$Latitude, firehouses$Longitude)
+a2 <- distm(fire_dist2, firehouse_dist, fun = distGeo)
+which_firehouse2 <- apply(a2, 1, which.min) #identifying which firehouse is the closest to each incident
+min_dist2 <- apply(a2, 1, min) #calculating the distance between incident and the closest firehouse 
+combined2 <- cbind(which_firehouse2, min_dist2)
+
+df2 <- cbind(combined2, non_severe)
+gg2 <- ggplot(df2, aes(x = min_dist2, y = response_time)) + scale_x_continuous(limit = c(0,1000)) + scale_y_continuous(limit = c(0,500)) + geom_point()
+gg2
+```
+
+For both severe and non-severe fire incidents, there does not seem to be a positive relationship between distance to the nearest firehouse and the response time. Both scatterplots does not show a clear linear trend. 
+
+## b) Map of Response Times
+```{r}
+m3 <- leaflet(df) %>%
+   addTiles('http://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', group = "BaseMap") %>%
+     setView(-73.9949344, 40.7179112, zoom = 14) %>% 
+  addCircles(color = color_offsel1, popup = content2, radius = df$response_time/10) %>%
+   addLegend(pal = pal, values = ~severe_fire$PROPERTY_TYPE, title = "Property Type")
+
+m3
+```
+The size of the circle marker indicates that the assembly property type had the fastest response time, whereas it was slower for business and residential property types. 
+
+```{r}
+library(rgdal)
+library(tidyr)
+library(sp)
+nyc <- readOGR(dsn = "/Users/sunghwapark/Desktop/Data\ Vis/borough_boundaries.geojson", layer = "borough_boundaries")
+
+fire_year <- severe_fire2 %>%
+  mutate(year = substring(severe_fire2$INCIDENT_DATE_TIME, 7, 10)) %>%
+  separate(BOROUGH_DESC, c("boro_code", "boro_name"), sep = "-") %>%
+  select(year, boro_code, boro_name, response_time)
+
+fire_year <- na.omit(fire_year)
+
+fire_year2 <- fire_year %>% group_by(year, boro_code, boro_name) %>%
+  summarise(avg_responsetime = mean(response_time, na.rm = TRUE))
+
+fire_year2$avg_responsetime <- as.numeric(fire_year2$avg_responsetime)
+
+fire_year3<- fire_year2 %>% spread(year, avg_responsetime)
+
+nyc@data$boro_name <- as.character(nyc$boro_name)
+
+fire_year3$boro_name=trimws(fire_year3$boro_name, which = c("both"))
+nyc@data <- nyc@data %>%
+  left_join(fire_year3, by = "boro_name")
+```
+
+```{r}
+library(tmap)
+```
+```{r}
+layout <- tm_layout(
+  legend.title.size = 0.5, 
+  legend.text.size = 0.3, 
+  legend.position = c(0.8, 0), 
+  legend.bg.color = "white", 
+  legend.bg.alpha = 1, 
+  bg.color = "white", 
+  frame = FALSE
+)
+
+tm1 <- tm_shape(nyc) + layout + tm_fill("2013") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tm2 <- tm_shape(nyc) + layout + tm_fill("2014") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tm3 <- tm_shape(nyc) + layout + tm_fill("2015") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tm4 <- tm_shape(nyc) + layout + tm_fill("2016") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tm5 <- tm_shape(nyc) + layout + tm_fill("2017") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tm6 <- tm_shape(nyc) + layout + tm_fill("2018") + tm_text("boro_name", size=.6, shadow = TRUE, bg.color = "white", bg.alpha = .25, remove.overlap = TRUE)
+
+tmap_arrange(tm1, tm2, tm3, tm4, tm5, tm6, asp = 1)
+```
+
+The above map shows that from 2017, the average response time for all boroughs have decreased, as the choropleth map shows that all colors have turned lighter. The biggest decrease seems to have happened in Staten Island, as the color lightened every year from 2016 to 2018. One interesting observation is that for the 5 year period from 2013 to 2018, Brooklyn had the fastest response time, wherease Manhattan had the slowest response time from 2013 to 2018. 
